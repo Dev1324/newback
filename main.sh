@@ -9,6 +9,9 @@ set -Eeuo pipefail
 SCRIPT_VERSION="v1.0.0-personal"
 APP_NAME="backhaul"
 CORE_NAME="backhaul_premium"
+# Core will be downloaded from this GitHub raw URL when you choose Install/update core.
+CORE_URL="https://raw.githubusercontent.com/Dev1324/newback/main/backhaul_premium"
+SCRIPT_URL="https://raw.githubusercontent.com/Dev1324/newback/main/main.sh"
 INSTALL_DIR="/root/backhaul-core"
 SERVICE_DIR="/etc/systemd/system"
 DEFAULT_TOKEN="e4d083d48ad8be4b962e48a7386fa6b5931f07250be4335a1837df3bca9cd062"
@@ -41,25 +44,30 @@ ensure_deps() {
   apt install -y curl wget tar unzip jq nano net-tools iproute2
 }
 
-install_core_from_local() {
+install_core_from_github() {
   mkdir -p "$INSTALL_DIR"
 
-  local script_dir
-  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-  if [[ -f "$script_dir/$CORE_NAME" ]]; then
-    cp -f "$script_dir/$CORE_NAME" "$INSTALL_DIR/$CORE_NAME"
+  info "Downloading core from GitHub..."
+  if curl -fL --retry 3 --connect-timeout 15 -o "$INSTALL_DIR/$CORE_NAME" "$CORE_URL"; then
     chmod +x "$INSTALL_DIR/$CORE_NAME"
-    msg "Core installed from local repo: $INSTALL_DIR/$CORE_NAME"
-  elif [[ -f "$INSTALL_DIR/$CORE_NAME" ]]; then
-    chmod +x "$INSTALL_DIR/$CORE_NAME"
-    msg "Core already exists: $INSTALL_DIR/$CORE_NAME"
+    msg "Core installed: $INSTALL_DIR/$CORE_NAME"
   else
-    err "Core not found. Put '$CORE_NAME' next to this script or in $INSTALL_DIR."
+    err "Failed to download core from: $CORE_URL"
     return 1
   fi
 
   "$INSTALL_DIR/$CORE_NAME" -v || true
+}
+
+install_script_command() {
+  info "Installing menu command: backhaul"
+  if curl -fL --retry 3 --connect-timeout 15 -o /usr/bin/backhaul "$SCRIPT_URL"; then
+    chmod +x /usr/bin/backhaul
+    msg "Menu installed. Run: backhaul"
+  else
+    err "Failed to download script from: $SCRIPT_URL"
+    return 1
+  fi
 }
 
 check_port() {
@@ -442,9 +450,9 @@ menu() {
     echo
     read -rp "Choice: " choice
     case "$choice" in
-      1) ensure_deps; install_core_from_local; pause ;;
-      2) install_core_from_local; create_iran; pause ;;
-      3) install_core_from_local; create_kharej; pause ;;
+      1) ensure_deps; install_core_from_github; install_script_command; pause ;;
+      2) install_core_from_github; create_iran; pause ;;
+      3) install_core_from_github; create_kharej; pause ;;
       4) manage_tunnels ;;
       5) show_info ;;
       6) optimize_system ;;
