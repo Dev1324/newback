@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Personal Backhaul Manager
-# Core binary must be named: backhaul_premium
-# Put this script and backhaul_premium in the same GitHub repo.
-# Run as root: bash backhaul.sh
-
-SCRIPT_VERSION="v1.0.0-personal"
-APP_NAME="backhaul"
+SCRIPT_VERSION="v1.0.1-personal"
 CORE_NAME="backhaul_premium"
-# Core will be downloaded from this GitHub raw URL when you choose Install/update core.
-CORE_URL="https://raw.githubusercontent.com/Dev1324/newback/main/backhaul_premium"
-SCRIPT_URL="https://raw.githubusercontent.com/Dev1324/newback/main/main.sh"
 INSTALL_DIR="/root/backhaul-core"
 SERVICE_DIR="/etc/systemd/system"
+
+CORE_URL="https://raw.githubusercontent.com/Dev1324/newback/main/backhaul_premium"
+SCRIPT_URL="https://raw.githubusercontent.com/Dev1324/newback/main/main.sh"
+
 DEFAULT_TOKEN="e4d083d48ad8be4b962e48a7386fa6b5931f07250be4335a1837df3bca9cd062"
 
 RED='\033[0;31m'
@@ -41,42 +36,55 @@ info() { echo -e "${CYAN}$*${NC}"; }
 
 ensure_deps() {
   apt update -y
-  apt install -y curl wget tar unzip jq nano net-tools iproute2
+  apt install -y curl wget tar unzip jq nano net-tools iproute2 openssl
 }
 
 install_core_from_github() {
   mkdir -p "$INSTALL_DIR"
 
-  info "Downloading core from GitHub..."
-  if curl -fL --retry 3 --connect-timeout 15 -o "$INSTALL_DIR/$CORE_NAME" "$CORE_URL"; then
+  info "Downloading backhaul_premium from GitHub..."
+
+  if curl -fL --retry 3 --connect-timeout 15 \
+    -o "$INSTALL_DIR/$CORE_NAME" \
+    "$CORE_URL"; then
+
     chmod +x "$INSTALL_DIR/$CORE_NAME"
     msg "Core installed: $INSTALL_DIR/$CORE_NAME"
   else
-    err "Failed to download core from: $CORE_URL"
+    err "Failed to download core:"
+    err "$CORE_URL"
     return 1
   fi
 
   "$INSTALL_DIR/$CORE_NAME" -v || true
 }
 
-install_script_command() {
-  info "Installing menu command: backhaul"
-  if curl -fL --retry 3 --connect-timeout 15 -o /usr/bin/backhaul "$SCRIPT_URL"; then
+update_menu_script() {
+  info "Updating menu command..."
+
+  if curl -fL --retry 3 --connect-timeout 15 \
+    -o /usr/bin/backhaul \
+    "$SCRIPT_URL"; then
+
     chmod +x /usr/bin/backhaul
-    msg "Menu installed. Run: backhaul"
+    msg "Menu updated. Run: backhaul"
   else
-    err "Failed to download script from: $SCRIPT_URL"
+    err "Failed to download menu script:"
+    err "$SCRIPT_URL"
     return 1
+  fi
+}
+
+core_ready_or_install() {
+  if [[ ! -x "$INSTALL_DIR/$CORE_NAME" ]]; then
+    warn "Core not found. Installing now..."
+    install_core_from_github
   fi
 }
 
 check_port() {
   local port="$1"
-  ss -lntup | awk '{print $5}' | grep -Eq "[:.]${port}$"
-}
-
-make_token() {
-  openssl rand -hex 32
+  ss -lntup 2>/dev/null | awk '{print $5}' | grep -Eq "[:.]${port}$"
 }
 
 write_service() {
@@ -125,10 +133,12 @@ show_status() {
 remove_tunnel() {
   local name="$1"
   local config="$2"
+
   systemctl disable --now "$name.service" 2>/dev/null || true
   rm -f "$SERVICE_DIR/${name}.service"
   rm -f "$config"
   systemctl daemon-reload
+
   msg "Removed: $name"
 }
 
@@ -137,6 +147,8 @@ create_iran() {
   info "IRAN server config"
   echo "This side accepts users on public ports and waits for Kharej client."
   echo
+
+  core_ready_or_install
 
   local tunnel_port transport token nodelay heartbeat channel_size ports web_port sniffer proxy_protocol accept_udp
 
@@ -183,7 +195,7 @@ create_iran() {
   echo
   warn "Port mapping examples:"
   echo "  6000                 listen on Iran:6000 and forward to Kharej:6000"
-  echo "  6000=6000            same as above"
+  echo "  6000=6000            same"
   echo "  6000=127.0.0.1:6000  forward to specific remote target"
   echo "  443-600              range"
   echo
@@ -221,10 +233,12 @@ EOF
   for p in "${arr[@]}"; do
     [[ -n "$p" ]] && echo "    \"$p\"," >> "$cfg"
   done
+
   echo "]" >> "$cfg"
 
   local service="backhaul-iran${tunnel_port}"
   write_service "$service" "$cfg"
+
   echo
   msg "Iran config: $cfg"
   msg "Tunnel port: $tunnel_port"
@@ -236,6 +250,8 @@ create_kharej() {
   info "KHAREJ server config"
   echo "This side connects to Iran and forwards to local Xray/Sanaei."
   echo
+
+  core_ready_or_install
 
   local server_addr tunnel_port transport token nodelay pool sniffer web_port ip_limit edge_ip
 
@@ -307,6 +323,7 @@ EOF
 
   local service="backhaul-kharej${tunnel_port}"
   write_service "$service" "$cfg"
+
   echo
   msg "Kharej config: $cfg"
   msg "Connects to: ${server_addr}:${tunnel_port}"
@@ -316,8 +333,10 @@ list_tunnels() {
   clear
   info "Existing Backhaul tunnels"
   echo
+
   shopt -s nullglob
   local files=("$INSTALL_DIR"/iran*.toml "$INSTALL_DIR"/kharej*.toml)
+
   if (( ${#files[@]} == 0 )); then
     warn "No config files found in $INSTALL_DIR"
     pause
@@ -329,20 +348,24 @@ list_tunnels() {
     local base service state
     base="$(basename "$f" .toml)"
     service="backhaul-${base}"
+
     if systemctl is-active --quiet "$service.service"; then
       state="running"
     else
       state="stopped"
     fi
+
     echo "[$i] $base | $state | $f"
     ((i++))
   done
+
   echo
 }
 
 manage_tunnels() {
   shopt -s nullglob
   local files=("$INSTALL_DIR"/iran*.toml "$INSTALL_DIR"/kharej*.toml)
+
   if (( ${#files[@]} == 0 )); then
     warn "No tunnels found."
     pause
@@ -350,8 +373,10 @@ manage_tunnels() {
   fi
 
   list_tunnels
+
   read -rp "Select tunnel number, 0 back: " idx
   [[ "$idx" == "0" ]] && return
+
   if ! [[ "$idx" =~ ^[0-9]+$ ]] || (( idx < 1 || idx > ${#files[@]} )); then
     err "Invalid choice."
     pause
@@ -359,7 +384,9 @@ manage_tunnels() {
   fi
 
   local cfg="${files[$((idx-1))]}"
-  local base="$(basename "$cfg" .toml)"
+  local base
+  base="$(basename "$cfg" .toml)"
+
   local service="backhaul-${base}"
 
   clear
@@ -372,6 +399,8 @@ manage_tunnels() {
   echo "6) Edit config"
   echo "7) Remove tunnel"
   echo "0) Back"
+  echo
+
   read -rp "Choice: " c
 
   case "$c" in
@@ -388,7 +417,8 @@ manage_tunnels() {
 }
 
 optimize_system() {
-  cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%s)
+  cp /etc/sysctl.conf "/etc/sysctl.conf.bak.$(date +%s)"
+
   cat > /etc/sysctl.d/99-backhaul-personal.conf <<'EOF'
 fs.file-max = 67108864
 net.core.default_qdisc = fq
@@ -407,9 +437,11 @@ net.ipv4.tcp_keepalive_time = 600
 net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_keepalive_probes = 5
 EOF
+
   sysctl --system
 
   mkdir -p /etc/systemd/system.conf.d
+
   cat > /etc/systemd/system.conf.d/99-backhaul-limits.conf <<'EOF'
 [Manager]
 DefaultLimitNOFILE=1048576
@@ -425,11 +457,13 @@ show_info() {
   echo "Install dir: $INSTALL_DIR"
   echo "Core: $INSTALL_DIR/$CORE_NAME"
   echo
+
   if [[ -x "$INSTALL_DIR/$CORE_NAME" ]]; then
     "$INSTALL_DIR/$CORE_NAME" -v || true
   else
     warn "Core not installed."
   fi
+
   echo
   ss -lntup | grep -E 'backhaul|6000|3080|3081|4080' || true
   echo
@@ -440,22 +474,26 @@ menu() {
   while true; do
     clear
     echo -e "${CYAN}========== Personal Backhaul Manager ==========${NC}"
-    echo "1) Install/update local core"
+    echo "1) Install/update core from GitHub"
     echo "2) Configure IRAN server"
     echo "3) Configure KHAREJ server"
     echo "4) Manage tunnels"
     echo "5) Show info / listening ports"
     echo "6) Optimize network"
+    echo "7) Update menu script"
     echo "0) Exit"
     echo
+
     read -rp "Choice: " choice
+
     case "$choice" in
-      1) ensure_deps; install_core_from_github; install_script_command; pause ;;
-      2) install_core_from_github; create_iran; pause ;;
-      3) install_core_from_github; create_kharej; pause ;;
+      1) ensure_deps; install_core_from_github; pause ;;
+      2) create_iran; pause ;;
+      3) create_kharej; pause ;;
       4) manage_tunnels ;;
       5) show_info ;;
       6) optimize_system ;;
+      7) ensure_deps; update_menu_script; pause ;;
       0) exit 0 ;;
       *) err "Invalid choice"; sleep 1 ;;
     esac
